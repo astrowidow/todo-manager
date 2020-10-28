@@ -248,9 +248,9 @@ class TaskManager:
     def start_up(self):
         # holiday handling
         for holiday in Datetime.generate_holiday_until_today():
-            self.notify_todo(holiday, NotifyTiming.ALL)
             debug_print("[holiday until today]")
             debug_print("  ", holiday)
+            self.notify_todo(holiday, NotifyTiming.ALL)
         # today's morning notify
         today = datetime.date.today()
         self.notify_todo(today, NotifyTiming.MORNING)
