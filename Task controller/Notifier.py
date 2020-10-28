@@ -33,6 +33,50 @@ class NotifyTiming(Enum):
     ALL = auto
 
 
+class ConfigParser:
+    def __init__(self):
+        self.config_ini = configparser.ConfigParser()
+        self.config_ini.read("config.ini", encoding='utf-8')
+
+    @staticmethod
+    def trim_path_str(path_str):
+        return path_str.replace('\n', '').replace('\\', '/')
+
+    def get_path_str(self, section, option):
+        return self.trim_path_str(self.config_ini.get(section, option))
+
+    def get_path_list_option(self, section, option):
+        tmp_path_str = self.get_path_str(section, option)
+        tmp_path_str = json.loads(tmp_path_str)
+        if not isinstance(tmp_path_str, list):
+            tmp_path_str = [tmp_path_str]
+        return [pathlib.Path(path_str) for path_str in tmp_path_str]
+
+    def get_option_str(self, section, option):
+        return self.config_ini.get(section, option)
+
+    def get_time_option(self, section, option):
+        time_str = self.get_option_str(section, option)
+        time_split_str = time_str.split(":")
+        hour = int(time_split_str[0])
+        minute = int(time_split_str[1])
+        second = int(0)
+        current_datetime = datetime.datetime.now()
+        work_begin_datetime = datetime.datetime(
+            current_datetime.year,
+            current_datetime.month,
+            current_datetime.day,
+            hour,
+            minute,
+            second)
+        return work_begin_datetime
+
+
+def get_time_option_from_config(option):
+    parser = ConfigParser()
+    return parser.get_time_option("TIME", option)
+
+
 class Datetime:
     def __init__(self, date_obj=datetime.date.today()):
         # locale.setlocale(locale.LC_TIME, 'ja_JP.UTF-8')
@@ -60,32 +104,47 @@ class Datetime:
         else:
             return False
 
-    def generate_holiday_until_today(self):
-        date = self.get_prev_date(datetime.date.today())
-        while self.is_holiday(date):
+    @staticmethod
+    def is_before_working_time():
+        work_begin_datetime = get_time_option_from_config("work_begin")
+        current_datetime = datetime.datetime.now()
+        diff_time = current_datetime - work_begin_datetime
+        if diff_time.total_seconds() < 0:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def generate_holiday_until_today():
+        date = Datetime.get_prev_date(datetime.date.today())
+        while Datetime.is_holiday(date):
             yield date
-            date = self.get_prev_date(date)
+            date = Datetime.get_prev_date(date)
 
 
 class Prefix:
     def __init__(self, date_obj, notify_timing):
         self.terminator = "_"
-        self.notify_fix_dict = {
-            NotifyType.MONTHLY: NotifyFix("★毎月", "日"),
-            NotifyType.WEEKLY:  NotifyFix("★毎週", "曜"),
-            NotifyType.DAILY:   NotifyFix("★毎日", ""),
-            NotifyType.DATE:    NotifyFix("★", "")
-        }
+        self.notify_fix_dict = {}
         self.timing_list = []
         self.set_timing_list(notify_timing)
-        self.set_infix_list(date_obj)
+        self.set_notify_fix_dict(date_obj)
 
-    def set_infix_list(self, date_obj):
+    def set_notify_fix_dict(self, date_obj):
+        # Sets prefix and suffix
+        self.notify_fix_dict = {
+            NotifyType.MONTHLY: NotifyFix("★毎月", "日"),
+            NotifyType.WEEKLY: NotifyFix("★毎週", "曜"),
+            NotifyType.DAILY: NotifyFix("★毎日", ""),
+            NotifyType.DATE: NotifyFix("★", "")
+        }
+
+        # Calculates infix
         datetime_manager = Datetime(date_obj)
         month = datetime_manager.get_month_str()
         date = datetime_manager.get_date_str()
         weekday = datetime_manager.get_weekday_str()
-        # set
+        # Sets infix
         self.notify_fix_dict[NotifyType.MONTHLY].infix = date
         self.notify_fix_dict[NotifyType.WEEKLY].infix = weekday
         self.notify_fix_dict[NotifyType.DAILY].infix = ""
@@ -112,26 +171,6 @@ class Prefix:
                 pref_list.append(prefix + infix + suffix + timing.value + self.terminator)
                 pref_type_list.append(notify_type)
         return pref_list, pref_type_list
-
-
-class ConfigParser:
-    def __init__(self):
-        self.config_ini = configparser.ConfigParser()
-        self.config_ini.read("config.ini", encoding='utf-8')
-
-    @staticmethod
-    def trim_path_str(path_str):
-        return path_str.replace('\n', '').replace('\\', '/')
-
-    def get_path_str(self, section, option):
-        return self.trim_path_str(self.config_ini.get(section, option))
-
-    def get_path_list(self, section, option):
-        tmp_path_str = self.get_path_str(section, option)
-        tmp_path_str = json.loads(tmp_path_str)
-        if not isinstance(tmp_path_str, list):
-            tmp_path_str = [tmp_path_str]
-        return [pathlib.Path(path_str) for path_str in tmp_path_str]
 
 
 class Notifier:
@@ -165,17 +204,52 @@ class Notifier:
                             os.remove(src_file)
 
 
-
 def get_notifier_from_config():
     parser = ConfigParser()
     # get src path
-    src = parser.get_path_list("SRC", "routine")
-    src = src + parser.get_path_list("SRC", "user")
+    src = parser.get_path_list_option("SRC", "routine")
+    src = src + parser.get_path_list_option("SRC", "user")
 
     # get dst path
-    dst = parser.get_path_list("DST", "next")
+    dst = parser.get_path_list_option("DST", "next")
     return Notifier(src, dst)
 
 
-notifier = get_notifier_from_config()
-notifier.notify_todo()
+class TaskManager:
+    def __init__(self):
+        self.notifier = get_notifier_from_config()
+
+    def start_up(self):
+        # holiday handling
+        for holiday in Datetime.generate_holiday_until_today():
+            self.notify_todo(holiday, NotifyTiming.ALL)
+        # today's morning notify
+        today = datetime.date.today()
+        self.notify_todo(today, NotifyTiming.MORNING)
+
+    def notify_todo(self, date_obj, notify_timing):
+        self.notifier.set_date(date_obj)
+        self.notifier.set_notify_timing(notify_timing)
+        self.notifier.notify_todo()
+
+
+def process_start_up():
+    manager = TaskManager()
+    manager.start_up()
+
+
+def notify_daily_todo(notify_timing):
+    manager = TaskManager()
+    manager.notify_todo(datetime.date.today(), notify_timing)
+
+
+def notify_morning_todo():
+    notify_daily_todo(NotifyTiming.MORNING)
+
+
+def notify_daytime_todo():
+    notify_daily_todo(NotifyTiming.DAYTIME)
+
+
+def notify_evening_todo():
+    notify_daily_todo(NotifyTiming.EVENING)
